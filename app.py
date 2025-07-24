@@ -39,28 +39,104 @@ async def wechat_callback_post(
     nonce: str = Query("")
 ):
     """处理企业微信消息接收"""
+    print("\n\n=== 开始处理微信消息回调 ===", flush=True)
+    print(f"请求参数: msg_signature={msg_signature}, timestamp={timestamp}, nonce={nonce}", flush=True)
     try:
         # 获取消息内容
         xml_content = await request.body()
-        xml_content = xml_content.decode('utf-8')
+        print("收到原始XML消息:", flush=True)
+        print(xml_content, flush=True)
+        xml_content_str = xml_content.decode('utf-8')
+        print("解码后的XML:", flush=True)
+        print(xml_content_str, flush=True)
+        
+        # 解析出原始XML
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(xml_content_str)
         
         # 如果配置了加密，需要解密消息
-        if wechat_api.crypto and msg_signature:
-            # 这里应该从XML中提取加密的消息内容，然后解密
-            # 简化处理，假设已经解密
-            pass
+        decrypted_xml = None
+        if msg_signature:
+            print(f"检测到签名消息，msg_signature={msg_signature}", flush=True)
+            print(f"timestamp={timestamp}, nonce={nonce}", flush=True)
+            
+            # 从XML中提取加密的消息内容
+            encrypt_elem = root.find(".//Encrypt")
+            if encrypt_elem is not None and encrypt_elem.text:
+                encrypted_msg = encrypt_elem.text
+                print(f"提取的加密消息: {encrypted_msg[:30]}...", flush=True)
+                
+                # 验证签名
+                from config import TOKEN, CORP_ID
+                print(f"TOKEN={TOKEN}, CORP_ID={CORP_ID}", flush=True)
+                
+                import hashlib
+                array = [TOKEN, timestamp, nonce, encrypted_msg]
+                array.sort()
+                str_to_sign = ''.join(array)
+                signature = hashlib.sha1(str_to_sign.encode('utf-8')).hexdigest()
+                
+                print(f"计算的签名: {signature}", flush=True)
+                print(f"接收的签名: {msg_signature}", flush=True)
+                
+                if signature == msg_signature:
+                    print("签名验证成功，开始解密", flush=True)
+                    
+                    # 检查加密模块
+                    if wechat_api.crypto:
+                        print("加密模块已初始化，开始解密", flush=True)
+                        # 解密消息
+                        decrypted_content = wechat_api.crypto.decrypt(encrypted_msg)
+                        if decrypted_content:
+                            print("解密成功！", flush=True)
+                            decrypted_xml = decrypted_content.decode('utf-8')
+                            print("解密后的XML:", flush=True)
+                            print(decrypted_xml, flush=True)
+                            
+                            # 使用解密后的内容更新xml_content
+                            xml_content_str = decrypted_xml
+                        else:
+                            print("解密失败！", flush=True)
+                    else:
+                        print("错误：加密模块未初始化", flush=True)
+                else:
+                    print("签名验证失败", flush=True)
         
         # 解析消息
-        message = wechat_api.parse_message(xml_content)
-        
+        message = wechat_api.parse_message(xml_content_str)
+        print("解析后的消息:", flush=True)
+        print(message, flush=True)
         # 仅处理文本消息
         if message.get('MsgType') == 'text':
             content = message.get('Content', '')
+            print(f"接收到文本消息: '{content}'", flush=True)
             
-            # 解析消息内容
+            # 调试: 简单回显收到的消息内容
+            from_user_name = message.get('FromUserName', '')
+            to_user_name = message.get('ToUserName', '')
+            print(f"发送者: {from_user_name}, 接收者: {to_user_name}", flush=True)
+            
+            # 测试简单回复
+            # if content and from_user_name:
+            #     reply = f"我收到了您的消息: {content}"
+            #     print(f"准备回复给用户 {from_user_name}: {reply}", flush=True)
+                
+            #     # 企业微信解析后的FromUserName是发送者的UserID
+            #     # 确保使用正确的用户ID发送回复
+            #     user_id = from_user_name
+            #     print(f"发送给用户ID: {user_id}", flush=True)
+                
+            #     # 发送回复
+            #     if wechat_api.send_message(user_id, reply):
+            #         print("回复消息已发送成功", flush=True)
+            #     else:
+            #         print("回复消息发送失败", flush=True)
+            
+            # 尝试解析消息内容
             record = message_parser.parse_message(content)
             
             if record:
+                print(f"成功解析消息为记录: {record.record_type}", flush=True)
                 # 存入数据库
                 record_id = db.insert_record(
                     record_time=record.record_time,
@@ -70,24 +146,33 @@ async def wechat_callback_post(
                 )
                 
                 if record_id:
+                    print(f"记录已插入数据库，ID: {record_id}", flush=True)
                     # 构建回复消息
                     reply = f"记录成功！\n时间：{record.record_time.strftime('%Y-%m-%d %H:%M')}\n类型：{record.record_type}"
                     if record.amount:
                         reply += f"\n数量：{record.amount}"
                     
                     # 发送回复
-                    # 注意：实际应用中需要获取正确的群聊ID
-                    chat_id = message.get('FromUserName', 'your_chat_id')
-                    wechat_api.send_message(chat_id, reply)
+                    user_id = from_user_name  # 使用FromUserName作为用户ID
+                    print(f"发送记录确认给用户ID: {user_id}", flush=True)
+                    if wechat_api.send_message(user_id, reply):
+                        print("成功回复记录确认", flush=True)
+                    else:
+                        print("发送记录确认失败", flush=True)
                 else:
-                    print("记录插入数据库失败")
+                    print("记录插入数据库失败", flush=True)
             else:
-                print(f"无法解析消息: {content}")
+                print(f"无法解析消息为记录: {content}", flush=True)
+        
+        # 记录处理完成
+        print("=== 消息处理完成 ===\n", flush=True)
         
         # 返回成功响应
         return PlainTextResponse("success")
     except Exception as e:
-        print(f"处理消息异常: {e}")
+        print(f"处理消息异常: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return PlainTextResponse("success")  # 企业微信要求始终返回success
 
 class RecordQueryParams:
@@ -196,9 +281,15 @@ async def startup_event():
     """应用启动时执行"""
     # 初始化数据库
     if not db.init_db():
-        print("数据库初始化失败")
+        print("数据库初始化失败", flush=True)
     else:
-        print("应用初始化成功")
+        print("应用初始化成功", flush=True)
+    
+    # 检查加密模块
+    from config import ENCODING_AES_KEY, CORP_ID
+    print(f"企业ID: {CORP_ID}", flush=True)
+    print(f"加密密钥长度: {len(ENCODING_AES_KEY) if ENCODING_AES_KEY else 0}", flush=True)
+    print(f"加密模块状态: {'已初始化' if wechat_api.crypto else '未初始化'}", flush=True)
 
 if __name__ == '__main__':
     # 启动FastAPI应用
