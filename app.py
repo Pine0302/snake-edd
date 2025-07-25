@@ -137,30 +137,78 @@ async def wechat_callback_post(
             
             if record:
                 print(f"成功解析消息为记录: {record.record_type}", flush=True)
-                # 存入数据库
-                record_id = db.insert_record(
-                    record_time=record.record_time,
-                    record_type=record.record_type,
-                    amount=record.amount,
-                    description=record.description
-                )
+                print(f"记录详情: 时间={record.record_time}, 类型={record.record_type}, 是否删除指令={record.is_delete_command}", flush=True)
                 
-                if record_id:
-                    print(f"记录已插入数据库，ID: {record_id}", flush=True)
-                    # 构建回复消息
-                    reply = f"记录成功！\n时间：{record.record_time.strftime('%Y-%m-%d %H:%M')}\n类型：{record.record_type}"
-                    if record.amount:
-                        reply += f"\n数量：{record.amount}"
+                # 检查是否是删除指令
+                if record.is_delete_command:
+                    print(f"检测到删除指令，准备删除记录: {record.record_time}, {record.record_type}", flush=True)
+                    # 删除记录
+                    result = db.delete_record(
+                        record_time=record.record_time,
+                        record_type=record.record_type
+                    )
                     
-                    # 发送回复
-                    user_id = from_user_name  # 使用FromUserName作为用户ID
-                    print(f"发送记录确认给用户ID: {user_id}", flush=True)
-                    if wechat_api.send_message(user_id, reply):
-                        print("成功回复记录确认", flush=True)
+                    if result:
+                        record_id = result['id']
+                        print(f"记录已标记为删除，ID: {record_id}", flush=True)
+                        
+                        # 构建回复消息
+                        reply = f"记录删除成功！\n时间：{record.record_time.strftime('%Y-%m-%d %H:%M')}\n类型：{record.record_type}"
+                        if result.get('amount'):
+                            reply += f"\n数量：{result.get('amount')}"
+                        
+                        # 发送回复
+                        user_id = from_user_name
+                        print(f"发送删除确认给用户ID: {user_id}", flush=True)
+                        if wechat_api.send_message(user_id, reply):
+                            print("成功回复删除确认", flush=True)
+                        else:
+                            print("发送删除确认失败", flush=True)
                     else:
-                        print("发送记录确认失败", flush=True)
+                        # 未找到要删除的记录
+                        reply = f"未找到要删除的记录！\n时间：{record.record_time.strftime('%Y-%m-%d %H:%M')}\n类型：{record.record_type}"
+                        user_id = from_user_name
+                        wechat_api.send_message(user_id, reply)
+                        print("未找到要删除的记录", flush=True)
                 else:
-                    print("记录插入数据库失败", flush=True)
+                    print(f"不是删除指令，准备插入/更新记录", flush=True)
+                    # 存入数据库
+                    result = db.insert_record(
+                        record_time=record.record_time,
+                        record_type=record.record_type,
+                        amount=record.amount,
+                        description=record.description
+                    )
+                    
+                    if result:
+                        record_id = result['id']
+                        is_update = result.get('is_update', False)
+                        
+                        print(f"记录已{'更新' if is_update else '插入'}数据库，ID: {record_id}", flush=True)
+                        # 构建回复消息
+                        reply = f"记录{'更新' if is_update else '添加'}成功！\n时间：{record.record_time.strftime('%Y-%m-%d %H:%M')}\n类型：{record.record_type}"
+                        if record.amount:
+                            reply += f"\n数量：{record.amount}"
+                        
+                        # 如果是更新记录，添加被覆盖的信息
+                        if is_update:
+                            old_amount = result.get('old_amount')
+                            old_description = result.get('old_description')
+                            reply += "\n\n覆盖了之前的记录："
+                            if old_amount:
+                                reply += f"\n原数量：{old_amount}"
+                            if old_description and old_description != record.description:
+                                reply += f"\n原描述：{old_description}"
+                        
+                        # 发送回复
+                        user_id = from_user_name  # 使用FromUserName作为用户ID
+                        print(f"发送记录确认给用户ID: {user_id}", flush=True)
+                        if wechat_api.send_message(user_id, reply):
+                            print("成功回复记录确认", flush=True)
+                        else:
+                            print("发送记录确认失败", flush=True)
+                    else:
+                        print("记录插入数据库失败", flush=True)
             else:
                 print(f"无法解析消息为记录: {content}", flush=True)
         
