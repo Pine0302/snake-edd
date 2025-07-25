@@ -2,15 +2,26 @@ import re
 from datetime import datetime, timedelta
 import jieba
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Tuple
 
 class BabyRecord(BaseModel):
     """婴儿记录数据模型"""
     record_time: datetime
     record_type: str
     amount: Optional[str] = None
+    amount_unit: Optional[str] = None
     description: Optional[str] = None
     is_delete_command: bool = False
+    is_daily_report_command: bool = False
+    report_date: Optional[str] = None
+    
+    def get_formatted_amount(self) -> Optional[str]:
+        """获取格式化的数量显示"""
+        if self.amount and self.amount_unit:
+            return f"{self.amount}{self.amount_unit}"
+        elif self.amount:
+            return self.amount
+        return None
 
 class MessageParser:
     """企业微信消息解析器"""
@@ -38,6 +49,9 @@ class MessageParser:
     # 删除指令正则表达式
     DELETE_PATTERN = r'(删除|去除|删掉|去掉).*?(今天|昨天|前天)?.*?(\d{1,2})[点时:：](\d{1,2})?分?.*?(吃|大便|小便|睡|体温|吃药)'
     
+    # 日报查询指令正则表达式
+    DAILY_REPORT_PATTERN = r'(查询|获取|看看|查看|显示).*?(今天|昨天|前天|\d{4}-\d{1,2}-\d{1,2}|\d{4}/\d{1,2}/\d{1,2}|\d{4}\.\d{1,2}\.\d{1,2}|\d{1,2}月\d{1,2}[日号])(的)?(记录|日报|报告|情况)'
+    
     def __init__(self):
         # 加载结巴分词词典
         jieba.add_word('拉屎')
@@ -56,6 +70,18 @@ class MessageParser:
         jieba.add_word('去除')
         jieba.add_word('删掉')
         jieba.add_word('去掉')
+        
+        # 添加日报查询相关词汇
+        jieba.add_word('查询')
+        jieba.add_word('获取')
+        jieba.add_word('查看')
+        jieba.add_word('显示')
+        jieba.add_word('日报')
+        jieba.add_word('报告')
+        jieba.add_word('记录')
+        jieba.add_word('今天')
+        jieba.add_word('昨天')
+        jieba.add_word('前天')
         
         # 添加时间表达方式
         jieba.add_word('点半')
@@ -83,22 +109,35 @@ class MessageParser:
         if not message or len(message) < 3:
             return None
             
-        # 检查是否是删除指令
+        # 初始化变量
         is_delete_command = False
+        is_daily_report_command = False
+        report_date = None
         
-        # 方法1：使用正则表达式检测
+        # 检查是否是删除指令
         delete_match = re.search(self.DELETE_PATTERN, message)
         if delete_match:
             print(f"通过正则表达式检测到删除指令: {delete_match.group(0)}", flush=True)
             print(f"删除指令匹配组: {delete_match.groups()}", flush=True)
             is_delete_command = True
         
-        # 方法2：简单关键词检测
+        # 简单关键词检测删除指令
         delete_keywords = ['删除', '去除', '删掉', '去掉']
         if any(keyword in message for keyword in delete_keywords):
             print(f"通过关键词检测到删除指令，包含关键词: {[k for k in delete_keywords if k in message]}", flush=True)
-            # 直接将包含删除关键词的消息识别为删除指令
             is_delete_command = True
+            
+        # 检查是否是日报查询指令
+        daily_report_match = re.search(self.DAILY_REPORT_PATTERN, message)
+        if daily_report_match:
+            print(f"检测到日报查询指令: {daily_report_match.group(0)}", flush=True)
+            print(f"日报查询匹配组: {daily_report_match.groups()}", flush=True)
+            is_daily_report_command = True
+            
+            # 提取日期
+            date_str = daily_report_match.group(2)
+            report_date = self._extract_date(date_str)
+            print(f"提取的日期: {report_date}", flush=True)
             
         # 提取时间信息
         record_time = self._extract_time(message)
@@ -109,18 +148,21 @@ class MessageParser:
             record_type = '其他'
         
         # 提取数量信息
-        amount = self._extract_amount(message, record_type)
+        amount, amount_unit = self._extract_amount(message, record_type)
         
         # 打印调试信息
-        print(f"解析结果: 时间={record_time}, 类型={record_type}, 是否删除={is_delete_command}", flush=True)
+        print(f"解析结果: 时间={record_time}, 类型={record_type}, 是否删除={is_delete_command}, 是否日报={is_daily_report_command}", flush=True)
         
         # 创建记录
         return BabyRecord(
             record_time=record_time,
             record_type=record_type,
             amount=amount,
+            amount_unit=amount_unit,
             description=message,
-            is_delete_command=is_delete_command
+            is_delete_command=is_delete_command,
+            is_daily_report_command=is_daily_report_command,
+            report_date=report_date
         )
     
     def _extract_time(self, message: str) -> datetime:
@@ -263,58 +305,179 @@ class MessageParser:
         print("未匹配到记录类型", flush=True)
         return None
     
-    def _extract_amount(self, message: str, record_type: str) -> Optional[str]:
+    def _extract_amount(self, message: str, record_type: str) -> Tuple[Optional[str], Optional[str]]:
         """从消息中提取数量信息"""
         # 打印调试信息
         print(f"提取数量信息，记录类型: {record_type}, 消息: '{message}'", flush=True)
         
+        # 中文数字转阿拉伯数字的映射
+        cn_num_map = {
+            '一': '1', '二': '2', '三': '3', '四': '4', '五': '5', 
+            '六': '6', '七': '7', '八': '8', '九': '9', '十': '10',
+            '两': '2', # 特别添加"两"的处理
+        }
+        
+        # 替换中文数字为阿拉伯数字
+        for cn_num, arab_num in cn_num_map.items():
+            message = message.replace(cn_num, arab_num)
+        
         # 根据记录类型选择合适的数量提取模式
         if record_type == '吃':
-            # 尝试提取毫升数或者一侧信息
-            for pattern_name in ['毫升', '一侧', '次数']:
-                pattern = self.AMOUNT_PATTERNS[pattern_name]
+            # 处理"妈奶X边"的情况，将其转换为毫升
+            mama_milk_patterns = [
+                r'(妈奶|母乳)\s*(1|2|3|4|5|两|一|二|三|四|五)边',  # 妈奶两边
+                r'(1|2|3|4|5|两|一|二|三|四|五)边\s*(妈奶|母乳)',  # 两边妈奶
+                r'(1|2|3|4|5|两|一|二|三|四|五)边',               # 两边（上下文中已知是妈奶）
+            ]
+            
+            for pattern in mama_milk_patterns:
                 match = re.search(pattern, message)
                 if match:
-                    result = None
-                    if pattern_name == '毫升':
-                        result = f"{match.group(1)}毫升"
-                    elif pattern_name == '一侧':
-                        result = match.group(1)
+                    # 提取边数
+                    if '妈奶' in match.group() or '母乳' in match.group():
+                        # 第一种或第二种模式
+                        side_count = match.group(1) if '边' in match.group(1) else match.group(2)
                     else:
-                        result = f"{match.group(1)}次"
-                    print(f"匹配到数量模式 '{pattern_name}': {result}", flush=True)
-                    return result
+                        # 第三种模式
+                        side_count = match.group(1)
+                    
+                    # 将中文数字转换为阿拉伯数字
+                    if side_count in cn_num_map:
+                        side_count = cn_num_map[side_count]
+                    
+                    # 计算毫升数量（每边40ml）
+                    ml_amount = int(side_count) * 40
+                    print(f"匹配到妈奶边数: {side_count}边，转换为: {ml_amount}毫升", flush=True)
+                    return str(ml_amount), "毫升"
+                
+            # 尝试提取毫升数
+            pattern = self.AMOUNT_PATTERNS['毫升']
+            match = re.search(pattern, message)
+            if match:
+                amount = match.group(1)
+                print(f"匹配到毫升数量: {amount}毫升", flush=True)
+                return amount, "毫升"
+                
+            # 尝试提取一侧信息
+            pattern = self.AMOUNT_PATTERNS['一侧']
+            match = re.search(pattern, message)
+            if match:
+                side = match.group(1)
+                print(f"匹配到侧信息: {side}", flush=True)
+                return side, None
+                
+            # 尝试提取次数
+            pattern = self.AMOUNT_PATTERNS['次数']
+            match = re.search(pattern, message)
+            if match:
+                count = match.group(1)
+                print(f"匹配到次数: {count}次", flush=True)
+                return count, "次"
         
         elif record_type == '大便' or record_type == '小便':
-            # 尝试提取次数或量词
-            for pattern_name in ['次数', '量词']:
-                pattern = self.AMOUNT_PATTERNS[pattern_name]
-                match = re.search(pattern, message)
-                if match:
-                    result = None
-                    if pattern_name == '次数':
-                        result = f"{match.group(1)}次"
-                    else:
-                        result = f"{match.group(1)}{match.group(2)}"
-                    print(f"匹配到数量模式 '{pattern_name}': {result}", flush=True)
-                    return result
+            # 尝试提取次数
+            pattern = self.AMOUNT_PATTERNS['次数']
+            match = re.search(pattern, message)
+            if match:
+                count = match.group(1)
+                print(f"匹配到次数: {count}次", flush=True)
+                return count, "次"
+                
+            # 尝试提取量词
+            pattern = self.AMOUNT_PATTERNS['量词']
+            match = re.search(pattern, message)
+            if match:
+                amount = match.group(1)
+                unit = match.group(2)
+                print(f"匹配到量词: {amount}{unit}", flush=True)
+                # 将中文数字转换为阿拉伯数字
+                if amount in cn_num_map:
+                    amount = cn_num_map[amount]
+                return amount, unit
+            
+            # 尝试匹配"小便X次"或"大便X次"的模式
+            type_amount_pattern = f"{record_type}\\s*([1-9][0-9]*)\\s*次"
+            match = re.search(type_amount_pattern, message)
+            if match:
+                count = match.group(1)
+                print(f"匹配到类型次数模式: {count}次", flush=True)
+                return count, "次"
+                
+            # 尝试匹配"X次小便"或"X次大便"的模式
+            amount_type_pattern = r"([1-9][0-9]*)\\s*次\\s*" + record_type
+            match = re.search(amount_type_pattern, message)
+            if match:
+                count = match.group(1)
+                print(f"匹配到次数类型模式: {count}次", flush=True)
+                return count, "次"
+                
+            # 尝试匹配句子末尾的数字+次模式
+            end_amount_pattern = r".*?([1-9][0-9]*)\\s*次[。，,\.、\s]*$"
+            match = re.search(end_amount_pattern, message)
+            if match:
+                count = match.group(1)
+                print(f"匹配到句尾次数模式: {count}次", flush=True)
+                return count, "次"
         
         elif record_type == '睡':
             # 尝试提取时长
             pattern = self.AMOUNT_PATTERNS['时长']
             match = re.search(pattern, message)
             if match:
-                return f"{match.group(1)}{match.group(2)}"
+                duration = match.group(1)
+                unit = match.group(2)
+                print(f"匹配到时长: {duration}{unit}", flush=True)
+                return duration, unit
         
         elif record_type == '体温':
             # 尝试提取温度
             pattern = self.AMOUNT_PATTERNS['温度']
             match = re.search(pattern, message)
             if match:
-                return f"{match.group(1)}℃"
+                temp = match.group(1)
+                print(f"匹配到温度: {temp}℃", flush=True)
+                return temp, "℃"
         
         # 默认返回None
-        return None
+        return None, None
+
+    def _extract_date(self, date_str: str) -> str:
+        """从日期字符串提取标准日期格式 (YYYY-MM-DD)"""
+        today = datetime.now().date()
+        
+        # 处理相对日期
+        if date_str == '今天':
+            return today.strftime('%Y-%m-%d')
+        elif date_str == '昨天':
+            return (today - timedelta(days=1)).strftime('%Y-%m-%d')
+        elif date_str == '前天':
+            return (today - timedelta(days=2)).strftime('%Y-%m-%d')
+            
+        # 处理标准日期格式
+        date_formats = [
+            (r'(\d{4})-(\d{1,2})-(\d{1,2})', '%Y-%m-%d'),  # YYYY-MM-DD
+            (r'(\d{4})/(\d{1,2})/(\d{1,2})', '%Y/%m/%d'),  # YYYY/MM/DD
+            (r'(\d{4})\.(\d{1,2})\.(\d{1,2})', '%Y.%m.%d'),  # YYYY.MM.DD
+            (r'(\d{1,2})月(\d{1,2})[日号]', '%m月%d日')  # MM月DD日
+        ]
+        
+        for pattern, fmt in date_formats:
+            match = re.search(pattern, date_str)
+            if match:
+                try:
+                    if fmt == '%m月%d日':
+                        # 对于只有月日的格式，添加当前年份
+                        month, day = int(match.group(1)), int(match.group(2))
+                        return f"{today.year}-{month:02d}-{day:02d}"
+                    else:
+                        # 解析完整日期
+                        date_obj = datetime.strptime(date_str, fmt).date()
+                        return date_obj.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+        
+        # 默认返回今天
+        return today.strftime('%Y-%m-%d')
 
 # 创建消息解析器实例
 message_parser = MessageParser() 
