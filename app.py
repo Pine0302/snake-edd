@@ -69,8 +69,8 @@ def generate_daily_report(date_str):
     return report
 
 app = FastAPI(
-    title="婴儿日常记录系统",
-    description="通过企业微信群接收婴儿日常记录并存储到数据库",
+    title="老三日常记录系统",
+    description="通过企业微信群接收老三日常记录并存储到数据库",
     version="1.0.0"
 )
 
@@ -542,7 +542,7 @@ async def get_daily_report(
         return HTMLResponse(content=f"""
         <html>
             <head>
-                <title>婴儿日报 - {date}</title>
+                <title>老三日报 - {date}</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }}
@@ -553,7 +553,7 @@ async def get_daily_report(
             </head>
             <body>
                 <div class="container">
-                    <h1>婴儿日报</h1>
+                    <h1>老三日报</h1>
                     <pre>{report_content}</pre>
                 </div>
             </body>
@@ -578,7 +578,7 @@ async def get_report_link():
         return HTMLResponse(content=f"""
         <html>
             <head>
-                <title>婴儿日报链接</title>
+                <title>老三日报链接</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }}
@@ -605,7 +605,7 @@ async def get_report_link():
             </head>
             <body>
                 <div class="container">
-                    <h1>婴儿日报链接</h1>
+                    <h1>老三日报链接</h1>
                     
                     <h2>查看今日日报</h2>
                     <div class="link-box">
